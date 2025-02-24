@@ -50,8 +50,11 @@ def arg_parser() -> argparse.Namespace:
     parser.add_argument("--port", type=int, default=7860, help="Web server port")
     parser.add_argument("--max_tokens", type=int, default=4096, help="Run model generate max new tokens")
     parser.add_argument("--device_map", type=str, default="cuda:0", help="Run model device map")
-    parser.add_argument("--dev", dest="dev_mode", action="store_true", help="Dev mode")
+    parser.add_argument("--load_in_4bit", action="store_true", help="Load model in 4bit")
+    parser.add_argument("--default_prompt", type=str, default=_default_prompt, help="Default prompt")
+    parser.add_argument("--default_system_prompt", type=str, default=_default_system_prompt, help="Default system prompt")
     parser.add_argument("--example_folder", type=str, default="example", help="Example folder")
+    parser.add_argument("--dev", dest="dev_mode", action="store_true", help="Dev mode")
 
     args = parser.parse_args()
 
@@ -62,7 +65,6 @@ def load_model(
     model_name: str,
     load_in_4bit: bool = True,
     device_map: str = "cuda:0",
-    token: int = 8192,
     revision: str = None,
     trust_remote_code: bool = False,
 ):
@@ -93,14 +95,12 @@ def load_model(
     try:
         PeftConfig.from_pretrained(
             model_name,
-            token=token,
             revision=revision,
             trust_remote_code=trust_remote_code,
         )
         model = PeftModel.from_pretrained(
             model,
             model_name,
-            token=token,
             revision=revision,
             is_trainable=True,
             trust_remote_code=trust_remote_code,
@@ -278,6 +278,8 @@ def test_website(
     device_map: str = "cuda:0",
     dev_mode: bool = False,
     example_folder: str = "examples",
+    default_prompt:str = _default_prompt,
+    default_system_prompt:str = _default_system_prompt,
     **kwds,
 ):
     if model_name and __model.get("name") is None:
@@ -313,12 +315,12 @@ def test_website(
 
             with gr.Column():
                 _model_name = gr.Textbox(label="模型名稱或路徑", value=__model.get("name", None), visible=not model_name)
-                system_prompt_input = gr.Textbox(label="輸入系統文字提示", lines=2, value=_default_system_prompt)
-                prompt_input = gr.Textbox(label="輸入文字提示", lines=2, value=_default_prompt)
+                system_prompt_input = gr.Textbox(label="輸入系統文字提示", lines=2, value=default_system_prompt)
+                prompt_input = gr.Textbox(label="輸入文字提示", lines=2, value=default_prompt)
                 _max_tokens = gr.Slider(label="Max tokens", value=max_tokens, minimum=1, maximum=8192, step=1)
                 detect_table = gr.Checkbox(label="是否自動偵測表格", value=True)
                 crop_table_padding = gr.Slider(label="偵測表格裁切框 padding", value=-60, minimum=-300, maximum=300, step=1)
-                repair_latex = gr.Checkbox(value=True, label="修復 latex", visible=dev_mode)
+                repair_latex = gr.Checkbox(label="修復 latex", value=True, visible=dev_mode)
                 full_border = gr.Checkbox(label="修復 latex 表格全框線", visible=dev_mode)
                 unsqueeze = gr.Checkbox(label="修復 latex 並解開多行/列合併", visible=dev_mode)
                 time_usage = gr.Textbox(label="每秒幾個 token")
