@@ -154,7 +154,6 @@ def generate(
 ) -> dict[str, str | int]:
     model = __model.get("model")
     tokenizer = __model.get("tokenizer")
-    print(model.device)
     messages = list()
 
     if system_prompt:
