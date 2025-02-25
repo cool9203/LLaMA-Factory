@@ -6,13 +6,16 @@ import io
 import time
 import traceback
 from pathlib import Path
+from typing import Annotated
 
 import gradio as gr
 import httpx
 import pypandoc
 import torch
+from fastapi import FastAPI, File, Form, UploadFile
 from peft import PeftConfig, PeftModel
 from PIL import Image
+from pydantic import BaseModel, ConfigDict
 from transformers import (
     AutoModelForVision2Seq,
     AutoProcessor,
@@ -24,6 +27,7 @@ from transformers import (
 
 from llamafactory import utils
 
+
 _default_prompt = "latex table ocr"
 _default_system_prompt = "You should follow the instructions carefully and explain your answers in detail."
 
@@ -31,7 +35,10 @@ __model: dict[str, PreTrainedModel | ProcessorMixin | PreTrainedTokenizer | str]
     "model": None,
     "tokenizer": None,
     "name": None,
+    "device": None,
 }
+
+app = FastAPI()
 
 
 def arg_parser() -> argparse.Namespace:
@@ -52,7 +59,9 @@ def arg_parser() -> argparse.Namespace:
     parser.add_argument("--device_map", type=str, default="cuda:0", help="Run model device map")
     parser.add_argument("--load_in_4bit", action="store_true", help="Load model in 4bit")
     parser.add_argument("--default_prompt", type=str, default=_default_prompt, help="Default prompt")
-    parser.add_argument("--default_system_prompt", type=str, default=_default_system_prompt, help="Default system prompt")
+    parser.add_argument(
+        "--default_system_prompt", type=str, default=_default_system_prompt, help="Default system prompt"
+    )
     parser.add_argument("--example_folder", type=str, default="example", help="Example folder")
     parser.add_argument("--dev", dest="dev_mode", action="store_true", help="Dev mode")
 
@@ -61,13 +70,29 @@ def arg_parser() -> argparse.Namespace:
     return args
 
 
+class UsageToken(BaseModel):
+    prompt_tokens: int
+    completion_tokens: int
+    total_tokens: int
+
+
+class InferenceTableResponse(BaseModel):
+    origin_content: str
+    html_content: str
+    images: list[str]
+    tokens: UsageToken
+    used_time: float
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+
 def load_model(
     model_name: str,
     load_in_4bit: bool = True,
     device_map: str = "cuda:0",
     revision: str = None,
     trust_remote_code: bool = False,
-):
+) -> tuple[PreTrainedModel, ProcessorMixin | PreTrainedTokenizer]:
     try:
         model = AutoModelForVision2Seq.from_pretrained(
             pretrained_model_name_or_path=model_name,
@@ -124,12 +149,12 @@ def generate(
     image,
     prompt: str,
     system_prompt: str = _default_system_prompt,
-    device_map: str = "auto",
     max_new_tokens: int = 1024,
     **kwds,
 ) -> dict[str, str | int]:
     model = __model.get("model")
     tokenizer = __model.get("tokenizer")
+    print(model.device)
     messages = list()
 
     if system_prompt:
@@ -154,7 +179,7 @@ def generate(
         input_text,
         add_special_tokens=True,
         return_tensors="pt",
-    ).to(device_map)
+    ).to(model.device)
 
     outputs = model.generate(
         **inputs,
@@ -165,7 +190,7 @@ def generate(
     # Reference: https://github.com/huggingface/transformers/issues/17117#issuecomment-1124497554
     return {
         "content": tokenizer.batch_decode(outputs[:, inputs["input_ids"].shape[1] :], skip_special_tokens=True)[0],
-        "usage": {
+        "tokens": {
             "prompt_tokens": inputs["input_ids"].shape[1],
             "completion_tokens": len(outputs[:, inputs["input_ids"].shape[1] :][0]),
             "total_tokens": inputs["input_ids"].shape[1] + len(outputs[:, inputs["input_ids"].shape[1] :][0]),
@@ -173,8 +198,80 @@ def generate(
     }
 
 
+@app.post("/api/inference_table")
+def inference_table_api(
+    image: Annotated[UploadFile, File()],
+    prompt: Annotated[str, Form()] = _default_prompt,
+    detect_table: Annotated[bool, Form()] = True,
+    crop_table_padding: Annotated[int, Form()] = -60,
+    max_tokens: Annotated[int, Form()] = 4096,
+    model_name: Annotated[str, Form()] = None,
+    system_prompt: Annotated[str, Form()] = _default_system_prompt,
+    repair_latex: Annotated[str, Form()] = False,
+    full_border: Annotated[bool, Form()] = False,
+    unsqueeze: Annotated[bool, Form()] = False,
+    img_type: Annotated[str, Form()] = "png",
+) -> InferenceTableResponse:
+    output = _inference_table(
+        image=image.file.read(),
+        prompt=prompt,
+        detect_table=detect_table,
+        crop_table_padding=crop_table_padding,
+        max_tokens=max_tokens,
+        model_name=model_name,
+        system_prompt=system_prompt,
+        repair_latex=repair_latex,
+        full_border=full_border,
+        unsqueeze=unsqueeze,
+    )
+
+    for i in range(len(output.images)):
+        with io.BytesIO(base64.b64decode(output.images[i].encode("utf-8"))) as origin_img_io:
+            img: Image.Image = Image.open(origin_img_io)
+            with io.BytesIO() as img_io:
+                img.save(img_io, format=img_type)
+                img_b64_str = base64.b64encode(img_io.getvalue()).decode("utf-8")
+                output.images[i] = f"data:{img_type};base64,{img_b64_str}"
+
+    return output
+
+
 def inference_table(
     image: Image.Image,
+    prompt: str = _default_prompt,
+    detect_table: bool = True,
+    crop_table_padding: int = -60,
+    max_tokens: int = 4096,
+    model_name: str = None,
+    system_prompt: str = _default_system_prompt,
+    device_map: str = "auto",
+    repair_latex: bool = False,
+    full_border: bool = False,
+    unsqueeze: bool = False,
+):
+    output = _inference_table(
+        image=image,
+        prompt=prompt,
+        detect_table=detect_table,
+        crop_table_padding=crop_table_padding,
+        max_tokens=max_tokens,
+        model_name=model_name,
+        system_prompt=system_prompt,
+        device_map=device_map,
+        repair_latex=repair_latex,
+        full_border=full_border,
+        unsqueeze=unsqueeze,
+    )
+    return (
+        output.origin_content,
+        output.html_content,
+        [Image.open(io.BytesIO(base64.b64decode(image.encode("utf-8")))) for image in output.images],
+        output.tokens.completion_tokens / output.used_time,
+    )
+
+
+def _inference_table(
+    image: str | bytes | Image.Image,
     prompt: str,
     detect_table: bool,
     crop_table_padding: int,
@@ -185,11 +282,20 @@ def inference_table(
     repair_latex: bool = False,
     full_border: bool = False,
     unsqueeze: bool = False,
-):
+) -> InferenceTableResponse:
+    if isinstance(image, Image.Image):
+        with io.BytesIO() as img_io:
+            image.save(img_io, format="png")
+            image = img_io.getvalue()
+    elif isinstance(image, str):
+        image = image.encode("utf-8")
+
     origin_responses = list()
-    crop_images = list()
+    crop_images: list[bytes] = list()
     used_time = 0
+    prompt_tokens = 0
     completion_tokens = 0
+    total_tokens = 0
 
     if model_name and model_name != __model.get("name", None):
         (__model["model"], __model["tokenizer"]) = load_model(
@@ -197,11 +303,10 @@ def inference_table(
             device_map=device_map,
         )
         __model["name"] = model_name
+        __model["device"] = str(__model["model"].device)
 
     if detect_table:
-        with io.BytesIO() as file_io:
-            image.save(file_io, format="png")
-            file_io.seek(0)
+        with io.BytesIO(image) as file_io:
             resp = httpx.post(
                 "http://10.70.0.232:9999/upload",
                 files={"file": ("image.png", file_io)},
@@ -213,28 +318,30 @@ def inference_table(
 
         for crop_image_base64 in resp.json():
             crop_image_data = base64.b64decode(crop_image_base64)
-            crop_images.append(Image.open(io.BytesIO(crop_image_data)))
+            crop_images.append(crop_image_data)
     else:
         crop_images.append(image)
 
     try:
         for crop_image in crop_images:
             start_time = time.time()
-            generate_response = generate(
-                prompt=prompt,
-                system_prompt=system_prompt,
-                image=crop_image,
-                device_map=device_map,
-                max_new_tokens=max_tokens,
-                use_cache=True,
-                top_p=1.0,
-                top_k=None,
-                do_sample=False,
-                temperature=None,
-            )
+            with io.BytesIO(crop_image) as img_io:
+                generate_response = generate(
+                    prompt=prompt,
+                    system_prompt=system_prompt,
+                    image=Image.open(img_io),
+                    max_new_tokens=max_tokens,
+                    use_cache=True,
+                    top_p=1.0,
+                    top_k=None,
+                    do_sample=False,
+                    temperature=None,
+                )
             end_time = time.time()
             used_time += end_time - start_time
-            completion_tokens += generate_response["usage"]["completion_tokens"]
+            prompt_tokens += generate_response["tokens"]["prompt_tokens"]
+            completion_tokens += generate_response["tokens"]["completion_tokens"]
+            total_tokens += generate_response["tokens"]["total_tokens"]
 
             if repair_latex and utils.is_latex_table(generate_response["content"]):
                 origin_responses.append(
@@ -262,26 +369,29 @@ def inference_table(
         html_response = "推論輸出無法解析"
         traceback.print_exception(e)
 
-    return (
-        "\n\n".join(origin_responses),
-        html_response,
-        crop_images,
-        completion_tokens / (used_time if used_time > 0 else 1e-6),
+    return InferenceTableResponse(
+        origin_content="\n\n".join(origin_responses),
+        html_content=html_response,
+        images=[base64.b64encode(crop_image).decode("utf-8") for crop_image in crop_images],
+        tokens=UsageToken(
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            total_tokens=total_tokens,
+        ),
+        used_time=used_time,
     )
 
 
 def test_website(
-    host: str = "127.0.0.1",
-    port: int = 7860,
     model_name: str = None,
     max_tokens: int = 4096,
     device_map: str = "cuda:0",
     dev_mode: bool = False,
     example_folder: str = "examples",
-    default_prompt:str = _default_prompt,
-    default_system_prompt:str = _default_system_prompt,
+    default_prompt: str = _default_prompt,
+    default_system_prompt: str = _default_system_prompt,
     **kwds,
-):
+) -> gr.Blocks:
     if model_name and __model.get("name") is None:
         (__model["model"], __model["tokenizer"]) = load_model(
             model_name=model_name,
@@ -293,7 +403,7 @@ def test_website(
     with gr.Blocks(
         title="VLM 生成表格測試網站",
         css="#component-6 { max-height: 85vh; }",
-    ) as demo:
+    ) as blocks:
         gr.Markdown("## VLM 生成表格測試網站")
 
         with gr.Row():
@@ -314,12 +424,16 @@ def test_website(
                 crop_table_results = gr.Gallery(label="偵測表格結果", format="png")
 
             with gr.Column():
-                _model_name = gr.Textbox(label="模型名稱或路徑", value=__model.get("name", None), visible=not model_name)
+                _model_name = gr.Textbox(
+                    label="模型名稱或路徑", value=__model.get("name", None), visible=not model_name
+                )
                 system_prompt_input = gr.Textbox(label="輸入系統文字提示", lines=2, value=default_system_prompt)
                 prompt_input = gr.Textbox(label="輸入文字提示", lines=2, value=default_prompt)
                 _max_tokens = gr.Slider(label="Max tokens", value=max_tokens, minimum=1, maximum=8192, step=1)
                 detect_table = gr.Checkbox(label="是否自動偵測表格", value=True)
-                crop_table_padding = gr.Slider(label="偵測表格裁切框 padding", value=-60, minimum=-300, maximum=300, step=1)
+                crop_table_padding = gr.Slider(
+                    label="偵測表格裁切框 padding", value=-60, minimum=-300, maximum=300, step=1
+                )
                 repair_latex = gr.Checkbox(label="修復 latex", value=True, visible=dev_mode)
                 full_border = gr.Checkbox(label="修復 latex 表格全框線", visible=dev_mode)
                 unsqueeze = gr.Checkbox(label="修復 latex 並解開多行/列合併", visible=dev_mode)
@@ -340,7 +454,7 @@ def test_website(
                 ],
                 key=lambda e: e[1],
             )
-            examples = gr.Examples(
+            gr.Examples(
                 examples=[
                     [
                         Image.open(path),
@@ -395,14 +509,25 @@ def test_website(
                 time_usage,
             ],
         )
-        demo.launch(
-            server_name=host,
-            server_port=port,
-            share=False,  # Reference: https://github.com/gradio-app/gradio/issues/7978#issuecomment-2567283591
-        )
+        return blocks
 
 
 if __name__ == "__main__":
     args = arg_parser()
     args_dict = vars(args)
-    test_website(**args_dict)
+    _default_prompt = args_dict["default_prompt"]
+    _default_system_prompt = args_dict["default_system_prompt"]
+    blocks = test_website(**args_dict)
+
+    import uvicorn
+
+    app = gr.mount_gradio_app(
+        app=app,
+        blocks=blocks,
+        path="/",
+    )
+    uvicorn.run(
+        app=app,
+        host=args_dict["host"],
+        port=args_dict["port"],
+    )
