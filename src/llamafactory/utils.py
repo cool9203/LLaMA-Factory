@@ -7,6 +7,7 @@ from typing import Any, Callable, Dict, Sequence, Tuple, Union
 
 import pandas as pd
 
+
 _latex_table_begin_pattern = r"\\begin{tabular}{[lrc|]*}"
 _latex_table_end_pattern = r"\\end{tabular}"
 _latex_multicolumn_pattern = r"\\multicolumn{(\d+)}{([lrc|]+)}{(.*)}"
@@ -139,7 +140,9 @@ def convert_latex_table_to_pandas(
 
     # Split latex table to list table
     cleaned_data = list()
-    table_data = [row.replace(r"\\", "").replace(r"\hline", "").replace(r"\cline", "").strip().split("&") for row in rows]
+    table_data = [
+        row.replace(r"\\", "").replace(r"\hline", "").replace(r"\cline", "").strip().split("&") for row in rows
+    ]
     for row in table_data:
         _row_data = list()
         for cell_text in row:
@@ -214,7 +217,7 @@ def convert_pandas_to_latex(
         latex_table_str = f"\\begin{{tabular}}{{{''.join(['c' for _ in range(len(df.columns))])}}}\n"
 
     # Add header
-    latex_table_str += _row_before_text + f"{'&'.join([column for column in df.columns])}\\\\\n"
+    latex_table_str += _row_before_text + f"{'&'.join(list(df.columns))}\\\\\n"
 
     # Add row data
     for i in range(len(df)):
@@ -225,7 +228,9 @@ def convert_pandas_to_latex(
                 skip_count -= 1
             else:
                 multicolumn_result = re.findall(_latex_multicolumn_pattern, df.iloc[i, column_index])
-                skip_count = int(multicolumn_result[0][0]) - 1 if multicolumn_result and skip_count == 0 else skip_count
+                skip_count = (
+                    int(multicolumn_result[0][0]) - 1 if multicolumn_result and skip_count == 0 else skip_count
+                )
                 row.append(df.iloc[i, column_index])
         latex_table_str += _row_before_text + f"{'&'.join(row)}\\\\\n"
 
