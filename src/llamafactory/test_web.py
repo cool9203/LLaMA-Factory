@@ -94,6 +94,7 @@ def load_model(
     trust_remote_code: bool = False,
 ) -> tuple[PreTrainedModel, ProcessorMixin | PreTrainedTokenizer]:
     try:
+        print("Use flash attention")
         model = AutoModelForVision2Seq.from_pretrained(
             pretrained_model_name_or_path=model_name,
             device_map=device_map,
@@ -103,7 +104,7 @@ def load_model(
             ),
             attn_implementation="flash_attention_2",
         )
-    except ValueError:
+    except (ValueError, ImportError):
         model = AutoModelForVision2Seq.from_pretrained(
             pretrained_model_name_or_path=model_name,
             device_map=device_map,
@@ -206,7 +207,7 @@ def inference_table_api(
     max_tokens: Annotated[int, Form()] = 4096,
     model_name: Annotated[str, Form()] = None,
     system_prompt: Annotated[str, Form()] = _default_system_prompt,
-    repair_latex: Annotated[str, Form()] = False,
+    repair_latex: Annotated[bool, Form()] = False,
     full_border: Annotated[bool, Form()] = False,
     unsqueeze: Annotated[bool, Form()] = False,
     img_type: Annotated[str, Form()] = "png",
