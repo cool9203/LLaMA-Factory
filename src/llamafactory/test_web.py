@@ -94,7 +94,6 @@ def load_model(
     trust_remote_code: bool = False,
 ) -> tuple[PreTrainedModel, ProcessorMixin | PreTrainedTokenizer]:
     try:
-        print("Use flash attention")
         model = AutoModelForVision2Seq.from_pretrained(
             pretrained_model_name_or_path=model_name,
             device_map=device_map,
@@ -104,6 +103,7 @@ def load_model(
             ),
             attn_implementation="flash_attention_2",
         )
+        print("Use flash attention")
     except (ValueError, ImportError):
         model = AutoModelForVision2Seq.from_pretrained(
             pretrained_model_name_or_path=model_name,
@@ -131,8 +131,8 @@ def load_model(
             is_trainable=True,
             trust_remote_code=trust_remote_code,
         )
-    except Exception:
-        pass
+    except Exception as e:
+        traceback.print_exception(e)
 
     # For inference mode
     model.gradient_checkpointing = False
@@ -146,6 +146,7 @@ def load_model(
     return (model, tokenizer)
 
 
+@torch.inference_mode()
 def generate(
     image,
     prompt: str,
@@ -396,6 +397,7 @@ def test_website(
         (__model["model"], __model["tokenizer"]) = load_model(
             model_name=model_name,
             device_map=device_map,
+            load_in_4bit=kwds.get("load_in_4bit", False),
         )
         __model["name"] = model_name
 
