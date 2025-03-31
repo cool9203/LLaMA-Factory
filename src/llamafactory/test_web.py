@@ -3,6 +3,7 @@
 import argparse
 import base64
 import io
+import json
 import time
 import traceback
 from pathlib import Path
@@ -13,27 +14,18 @@ import httpx
 import pypandoc
 import torch
 from fastapi import FastAPI, File, Form, UploadFile
-from peft import PeftConfig, PeftModel
 from PIL import Image
 from pydantic import BaseModel, ConfigDict
-from transformers import (
-    AutoModelForVision2Seq,
-    AutoProcessor,
-    BitsAndBytesConfig,
-    PreTrainedModel,
-    PreTrainedTokenizer,
-    ProcessorMixin,
-)
 
 from llamafactory import utils
+from llamafactory.chat import ChatModel
 
 
 _default_prompt = "latex table ocr"
 _default_system_prompt = "You should follow the instructions carefully and explain your answers in detail."
 
-__model: dict[str, PreTrainedModel | ProcessorMixin | PreTrainedTokenizer | str] = {
+__model: dict[str, ChatModel | str] = {
     "model": None,
-    "tokenizer": None,
     "name": None,
     "device": None,
 }
@@ -56,8 +48,7 @@ def arg_parser() -> argparse.Namespace:
     parser.add_argument("--host", type=str, default="127.0.0.1", help="Web server host")
     parser.add_argument("--port", type=int, default=7860, help="Web server port")
     parser.add_argument("--max_tokens", type=int, default=4096, help="Run model generate max new tokens")
-    parser.add_argument("--device_map", type=str, default="cuda:0", help="Run model device map")
-    parser.add_argument("--load_in_4bit", action="store_true", help="Load model in 4bit")
+    parser.add_argument("--chat_template", type=str, required=True, help="Model chat template")
     parser.add_argument("--default_prompt", type=str, default=_default_prompt, help="Default prompt")
     parser.add_argument(
         "--default_system_prompt", type=str, default=_default_system_prompt, help="Default system prompt"
@@ -86,64 +77,26 @@ class InferenceTableResponse(BaseModel):
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
 
+@torch.inference_mode()
 def load_model(
     model_name: str,
-    load_in_4bit: bool = True,
-    device_map: str = "cuda:0",
-    revision: str = None,
-    trust_remote_code: bool = False,
-) -> tuple[PreTrainedModel, ProcessorMixin | PreTrainedTokenizer]:
-    try:
-        model = AutoModelForVision2Seq.from_pretrained(
-            pretrained_model_name_or_path=model_name,
-            device_map=device_map,
-            quantization_config=BitsAndBytesConfig(
-                load_in_4bit=load_in_4bit,
-                bnb_4bit_compute_dtype=torch.bfloat16,
-            ),
-            attn_implementation="flash_attention_2",
-        )
-        print("Use flash attention")
-    except (ValueError, ImportError):
-        model = AutoModelForVision2Seq.from_pretrained(
-            pretrained_model_name_or_path=model_name,
-            device_map=device_map,
-            quantization_config=BitsAndBytesConfig(
-                load_in_4bit=load_in_4bit,
-                bnb_4bit_compute_dtype=torch.bfloat16,
-            ),
-        )
-    tokenizer = AutoProcessor.from_pretrained(
-        pretrained_model_name_or_path=model_name,
-        device_map=device_map,
+    chat_template: str,
+) -> ChatModel:
+    adapter_config_path = Path(model_name, "adapter_config.json")
+    with adapter_config_path.open(mode="r", encoding="utf-8") as f:
+        adapter_config = json.load(fp=f)
+
+    return ChatModel(
+        {
+            "model_name_or_path": adapter_config.get("base_model_name_or_path"),
+            "adapter_name_or_path": model_name,
+            "finetuning_type": "lora",
+            "template": chat_template,
+            "infer_dtype": "float16",
+            "do_sample": False,
+            "max_new_tokens": 4096,
+        }
     )
-
-    try:
-        PeftConfig.from_pretrained(
-            model_name,
-            revision=revision,
-            trust_remote_code=trust_remote_code,
-        )
-        model = PeftModel.from_pretrained(
-            model,
-            model_name,
-            revision=revision,
-            is_trainable=True,
-            trust_remote_code=trust_remote_code,
-        )
-    except Exception as e:
-        traceback.print_exception(e)
-
-    # For inference mode
-    model.gradient_checkpointing = False
-    model.training = False
-    for name, module in model.named_modules():
-        if hasattr(module, "gradient_checkpointing"):
-            module.gradient_checkpointing = False
-        if hasattr(module, "training"):
-            module.training = False
-
-    return (model, tokenizer)
 
 
 @torch.inference_mode()
@@ -155,7 +108,6 @@ def generate(
     **kwds,
 ) -> dict[str, str | int]:
     model = __model.get("model")
-    tokenizer = __model.get("tokenizer")
     messages = list()
 
     if system_prompt:
@@ -168,33 +120,25 @@ def generate(
     messages.append(
         {
             "role": "user",
-            "content": [
-                {"type": "image"},
-                {"type": "text", "text": prompt},
-            ],
+            "content": f"<image> {prompt}",
         }
     )
-    input_text = tokenizer.apply_chat_template(messages, add_generation_prompt=True)
-    inputs = tokenizer(
-        image,
-        input_text,
-        add_special_tokens=True,
-        return_tensors="pt",
-    ).to(model.device)
 
-    outputs = model.generate(
-        **inputs,
+    outputs = model.chat(
+        messages,
+        images=[image],
         max_new_tokens=max_new_tokens,
         **kwds,
     )
+    print(outputs)
 
     # Reference: https://github.com/huggingface/transformers/issues/17117#issuecomment-1124497554
     return {
-        "content": tokenizer.batch_decode(outputs[:, inputs["input_ids"].shape[1] :], skip_special_tokens=True)[0],
+        "content": outputs[0].response_text,
         "tokens": {
-            "prompt_tokens": inputs["input_ids"].shape[1],
-            "completion_tokens": len(outputs[:, inputs["input_ids"].shape[1] :][0]),
-            "total_tokens": inputs["input_ids"].shape[1] + len(outputs[:, inputs["input_ids"].shape[1] :][0]),
+            "prompt_tokens": outputs[0].prompt_length,
+            "completion_tokens": outputs[0].response_length,
+            "total_tokens": outputs[0].prompt_length + outputs[0].response_length,
         },
     }
 
@@ -267,7 +211,7 @@ def inference_table(
         output.origin_content,
         output.html_content,
         [Image.open(io.BytesIO(base64.b64decode(image.encode("utf-8")))) for image in output.images],
-        output.tokens.completion_tokens / output.used_time,
+        output.tokens.completion_tokens / output.used_time if output.used_time > 0 else 0,
     )
 
 
@@ -299,10 +243,7 @@ def _inference_table(
     total_tokens = 0
 
     if model_name and model_name != __model.get("name", None):
-        (__model["model"], __model["tokenizer"]) = load_model(
-            model_name=model_name,
-            device_map=device_map,
-        )
+        __model["model"] = load_model(model_name=model_name)
         __model["name"] = model_name
         __model["device"] = str(__model["model"].device)
 
@@ -391,13 +332,13 @@ def test_website(
     example_folder: str = "examples",
     default_prompt: str = _default_prompt,
     default_system_prompt: str = _default_system_prompt,
+    chat_template: str = None,
     **kwds,
 ) -> gr.Blocks:
     if model_name and __model.get("name") is None:
-        (__model["model"], __model["tokenizer"]) = load_model(
+        __model["model"] = load_model(
             model_name=model_name,
-            device_map=device_map,
-            load_in_4bit=kwds.get("load_in_4bit", False),
+            chat_template=chat_template,
         )
         __model["name"] = model_name
 
