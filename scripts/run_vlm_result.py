@@ -126,25 +126,28 @@ def run_vlm_result(
         if not Path(str(inference_filepath) + ".txt").exists() or not Path(str(inference_filepath) + ".html").exists():
             logger.info(f"Call api date: {dt.datetime.now()!s}")
 
-            predict_latex_table_content, html_render_latex_table_content = _vlm_inference(
-                api_url=api_url,
-                prompt=prompt,
-                image_path=image_filepath,
-                model_name=model_name,
-                detect_table=detect_table,
-                crop_table_padding=crop_table_padding,
-                system_prompt=system_prompt,
-                max_tokens=max_tokens,
-                repair_latex=repair_latex,
-                retry=retry,
-                timeout=timeout,
-            )
+            try:
+                predict_latex_table_content, html_render_latex_table_content = _vlm_inference(
+                    api_url=api_url,
+                    prompt=prompt,
+                    image_path=image_filepath,
+                    model_name=model_name,
+                    detect_table=detect_table,
+                    crop_table_padding=crop_table_padding,
+                    system_prompt=system_prompt,
+                    max_tokens=max_tokens,
+                    repair_latex=repair_latex,
+                    retry=retry,
+                    timeout=timeout,
+                )
 
-            Path(inference_filepath).parent.mkdir(exist_ok=True, parents=True)
-            with Path(str(inference_filepath) + ".txt").open("w", encoding="utf-8") as f:
-                f.write(predict_latex_table_content)
-            with Path(str(inference_filepath) + ".html").open("w", encoding="utf-8") as f:
-                f.write(html_render_latex_table_content)
+                Path(inference_filepath).parent.mkdir(exist_ok=True, parents=True)
+                with Path(str(inference_filepath) + ".txt").open("w", encoding="utf-8") as f:
+                    f.write(predict_latex_table_content)
+                with Path(str(inference_filepath) + ".html").open("w", encoding="utf-8") as f:
+                    f.write(html_render_latex_table_content)
+            except Exception:
+                pass
 
             time.sleep(10)
 
