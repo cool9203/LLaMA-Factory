@@ -114,7 +114,7 @@ def generate(
         messages.append(
             {
                 "role": "user",
-                "content": [{"type": "text", "text": system_prompt}],
+                "content": system_prompt,
             }
         )
     messages.append(
