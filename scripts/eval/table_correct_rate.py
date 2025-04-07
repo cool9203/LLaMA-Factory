@@ -2,9 +2,7 @@
 
 import argparse
 import ast
-import base64
 import datetime as dt
-import io
 import logging
 import os
 import platform
@@ -13,24 +11,12 @@ import time
 from dataclasses import dataclass, field
 from os import PathLike
 from pathlib import Path, PurePosixPath, PureWindowsPath
-from tempfile import TemporaryDirectory
 
 import httpx
 import pandas as pd
 import tqdm as TQDM
-from gradio_client import Client as GradioClient
-from gradio_client import handle_file
-from PIL import Image
 
 from llamafactory import utils
-
-
-try:
-    from openai import Client as OpenaiClient
-except Exception:
-
-    class OpenaiClient:
-        pass
 
 
 _replace_vocab = {
@@ -93,15 +79,6 @@ logger.setLevel(os.environ.get("LOG_LEVEL", "INFO"))
 
 
 def arg_parser() -> argparse.Namespace:
-    """取得執行程式時傳遞的參數
-
-    tutorial: https://docs.python.org/zh-tw/3/howto/argparse.html#
-    reference: https://docs.python.org/zh-tw/3/library/argparse.html#nargs
-
-    Returns:
-        argparse.Namespace: 使用args.name取得傳遞的參數
-    """
-
     parser = argparse.ArgumentParser(description="Evaluation latex table model")
     parser.add_argument("--datasets", type=str, nargs="+", required=True, default=[], help="Evaluation dataset path")
     parser.add_argument("--api_url", type=str, default=None, help="Latex table model gradio api url")
@@ -120,9 +97,7 @@ def arg_parser() -> argparse.Namespace:
         action="store_false",
         help="Eval skip space row",
     )
-    parser.add_argument(
-        "--inference_result_folder", type=str, default="pred", help="Save inference result folder name"
-    )
+    parser.add_argument("--inference_result_folder", type=str, required=True, help="Save inference result folder name")
     parser.add_argument("--target_platform", type=str, default=None, help="Platform")
 
     args = parser.parse_args()
@@ -181,123 +156,6 @@ def _inference_latex_table_httpx(
             print(e)
             _error = e
             time.sleep(10)
-    raise _error
-
-
-def _inference_latex_table_gradio(
-    api_url: str,
-    prompt: str,
-    image_path: str,
-    model_name: str,
-    detect_table: bool,
-    crop_table_padding: int,
-    system_prompt: str,
-    max_tokens: int,
-    repair_latex: bool,
-    retry: int,
-    timeout: float,
-) -> str:
-    _error = RuntimeError("inference latex table error")
-    _request_data = {
-        "image": handle_file(image_path),
-    }
-    _request_data.update(prompt=prompt) if prompt is not None else None
-    _request_data.update(model_name=model_name) if model_name is not None else None
-    _request_data.update(detect_table=detect_table) if detect_table is not None else None
-    _request_data.update(crop_table_padding=crop_table_padding) if crop_table_padding is not None else None
-    _request_data.update(system_prompt=system_prompt) if system_prompt is not None else None
-    _request_data.update(max_tokens=max_tokens) if max_tokens is not None else None
-    _request_data.update(repair_latex=repair_latex) if repair_latex is not None else None
-
-    for _ in range(retry):
-        try:
-            client = GradioClient(api_url, httpx_kwargs={"timeout": httpx.Timeout(timeout=timeout)}, verbose=False)
-            response = client.predict(
-                **_request_data,
-                api_name="/inference_table",
-            )
-            return str(response[0])
-        except Exception as e:
-            _error = e
-            time.sleep(10)
-    raise _error
-
-
-def _inference_latex_table_openai(
-    client: OpenaiClient,
-    prompt: str,
-    image_path: str,
-    model_name: str,
-    detect_table: bool,
-    crop_table_padding: int,
-    system_prompt: str,
-    max_tokens: int,
-    retry: int,
-    **kwds,
-) -> str:
-    crop_images: list[Image.Image] = list()
-    if detect_table:
-        with Path(image_path).open("rb") as file_io:
-            resp = httpx.post(
-                "http://10.70.0.232:9999/upload",
-                files={"file": ("image.png", file_io)},
-                data={
-                    "action": "crop",
-                    "padding": crop_table_padding,
-                },
-            )
-
-        for crop_image_base64 in resp.json():
-            crop_image_data = base64.b64decode(crop_image_base64)
-            crop_images.append(Image.open(io.BytesIO(crop_image_data)))
-    else:
-        crop_images.append(Image.open(image_path))
-
-    _error = RuntimeError("inference latex table error")
-
-    inference_responses = list()
-    try:
-        for image in crop_images:
-            with TemporaryDirectory() as temp_dir:
-                temp_image_path = Path(temp_dir, "image.png")
-                image.save(temp_image_path)
-                with temp_image_path.open("rb") as f:
-                    img_b64_str = base64.b64encode(f.read()).decode("utf-8")
-
-            messages = list()
-            if system_prompt:
-                messages.append(
-                    {
-                        "role": "system",
-                        "content": [
-                            {"type": "text", "text": system_prompt},
-                        ],
-                    }
-                )
-
-            messages.append(
-                {
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "image_url",
-                            "image_url": {"url": f"data:image;base64,{img_b64_str}"},
-                        },
-                        {"type": "text", "text": prompt},
-                    ],
-                }
-            )
-
-            response = client.chat.completions.create(
-                model=model_name,
-                messages=messages,
-                max_completion_tokens=max_tokens,
-            )
-            inference_responses.append(response.choices[0])
-    except Exception as e:
-        _error = e
-    if _error is None:
-        return "\n\n".join(inference_responses)
     raise _error
 
 
@@ -450,9 +308,10 @@ Cell correct count: {result.cell_correct_count}
 {styling_df_html}""")
 
 
-def eval_latex_table(
+def table_correct_rate(
     api_url: str,
     dataset_path: PathLike,
+    inference_result_folder: str,
     prompt: str = None,
     model_name: str = None,
     detect_table: bool = True,
@@ -462,8 +321,6 @@ def eval_latex_table(
     repair_latex: bool = False,
     remove_all_space_row: bool = True,
     retry: int = 5,
-    inference_result_folder: str = "pred",
-    backend: str = "gradio",
     timeout: float = 900,
     tqdm: bool = True,
 ) -> list[EvalResult]:
@@ -490,47 +347,19 @@ def eval_latex_table(
     for txt_filepath, image_filepath, inference_filepath in TQDM.tqdm(data, desc="Eval") if tqdm else data:
         if not Path(inference_filepath).exists():
             logger.info(f"Call api date: {dt.datetime.now()!s}")
-            if backend == "openai":
-                predict_latex_table_text = _inference_latex_table_openai(
-                    client=OpenaiClient(api_key="empty", base_url=api_url, timeout=timeout, max_retries=retry),
-                    prompt=prompt,
-                    image_path=image_filepath,
-                    model_name=model_name,
-                    detect_table=detect_table,
-                    crop_table_padding=crop_table_padding,
-                    system_prompt=system_prompt,
-                    max_tokens=max_tokens,
-                    repair_latex=repair_latex,
-                    retry=retry,
-                )
-            elif backend == "gradio":
-                predict_latex_table_text = _inference_latex_table_gradio(
-                    api_url=api_url,
-                    prompt=prompt,
-                    image_path=image_filepath,
-                    model_name=model_name,
-                    detect_table=detect_table,
-                    crop_table_padding=crop_table_padding,
-                    system_prompt=system_prompt,
-                    max_tokens=max_tokens,
-                    repair_latex=repair_latex,
-                    retry=retry,
-                    timeout=timeout,
-                )
-            elif backend == "httpx":
-                predict_latex_table_text = _inference_latex_table_httpx(
-                    api_url=api_url,
-                    prompt=prompt,
-                    image_path=image_filepath,
-                    model_name=model_name,
-                    detect_table=detect_table,
-                    crop_table_padding=crop_table_padding,
-                    system_prompt=system_prompt,
-                    max_tokens=max_tokens,
-                    repair_latex=repair_latex,
-                    retry=retry,
-                    timeout=timeout,
-                )
+            predict_latex_table_text = _inference_latex_table_httpx(
+                api_url=api_url,
+                prompt=prompt,
+                image_path=image_filepath,
+                model_name=model_name,
+                detect_table=detect_table,
+                crop_table_padding=crop_table_padding,
+                system_prompt=system_prompt,
+                max_tokens=max_tokens,
+                repair_latex=repair_latex,
+                retry=retry,
+                timeout=timeout,
+            )
 
             Path(inference_filepath).parent.mkdir(exist_ok=True, parents=True)
             with Path(inference_filepath).open("w", encoding="utf-8") as f:
@@ -582,14 +411,14 @@ def eval_latex_table(
             dataset_path=str(dataset_path),
         )
 
+        if predict_df and gold_df:
+            result.cell_count = len(gold_df.columns) * len(gold_df) + len(gold_df.columns)
+
         if predict_df is None:
             result.predict_latex_error = True
         elif gold_df is None:
             result.gold_latex_error = True
-
         else:
-            result.cell_count = len(gold_df.columns) * len(gold_df) + len(gold_df.columns)
-
             # Compare header(column)
             for column_index in range(min(len(gold_df.columns), len(predict_df.columns))):
                 gold_text = gold_df.columns[column_index].replace(" ", "").replace("\n", "").replace(":", "")
@@ -642,10 +471,9 @@ if __name__ == "__main__":
                 passed_parameters.update(ast.literal_eval(f"{{'{parameter_split[0]}': {parameter_split[1]}}}"))
 
         logger.info(f"Eval {dataset_path_split[0]}\nparameter: {pprint.pformat(passed_parameters)}")
-        results += eval_latex_table(
+        results += table_correct_rate(
             dataset_path=dataset_path_split[0],
             timeout=300,
-            backend="httpx",
             retry=30,
             **passed_parameters,
         )
