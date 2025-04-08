@@ -1,18 +1,14 @@
 # coding: utf-8
 
 import argparse
-import ast
-import datetime as dt
 import logging
 import os
 import platform
 import pprint
-import time
 from dataclasses import dataclass, field
 from os import PathLike
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
-import httpx
 import pandas as pd
 import tqdm as TQDM
 
@@ -81,15 +77,6 @@ logger.setLevel(os.environ.get("LOG_LEVEL", "INFO"))
 def arg_parser() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Evaluation latex table model")
     parser.add_argument("--datasets", type=str, nargs="+", required=True, default=[], help="Evaluation dataset path")
-    parser.add_argument("--api_url", type=str, default=None, help="Latex table model gradio api url")
-    parser.add_argument("--max_tokens", type=int, default=4096, help="Model max tokens")
-    parser.add_argument("--prompt", type=str, default="OCR with format:", help="Model prompt")
-    parser.add_argument(
-        "--system_prompt",
-        type=str,
-        default="        You should follow the instructions carefully and explain your answers in detail.",
-        help="Model system prompt",
-    )
     parser.add_argument("--output", type=str, default="eval_result", help="Eval detail output path")
     parser.add_argument(
         "--skip_space_row",
@@ -97,8 +84,9 @@ def arg_parser() -> argparse.Namespace:
         action="store_false",
         help="Eval skip space row",
     )
-    parser.add_argument("--inference_result_folder", type=str, required=True, help="Save inference result folder name")
+    parser.add_argument("--inference_result_folder", type=str, default=None, help="Save inference result folder name")
     parser.add_argument("--target_platform", type=str, default=None, help="Platform")
+    parser.add_argument("--tqdm", action="store_true", help="Show progress bar")
 
     args = parser.parse_args()
 
@@ -117,46 +105,6 @@ class EvalResult:
     predict_df: pd.DataFrame = None
     error_indexes: list[tuple[int, int]] = field(default_factory=list)
     dataset_path: str = ""
-
-
-def _inference_latex_table_httpx(
-    api_url: str,
-    prompt: str,
-    image_path: str,
-    model_name: str,
-    detect_table: bool,
-    crop_table_padding: int,
-    system_prompt: str,
-    max_tokens: int,
-    repair_latex: bool,
-    retry: int,
-    timeout: float,
-) -> str:
-    _error = RuntimeError("inference latex table error")
-    _request_data = dict()
-    _request_data.update(prompt=prompt) if prompt is not None else None
-    _request_data.update(model_name=model_name) if model_name is not None else None
-    _request_data.update(detect_table=detect_table) if detect_table is not None else None
-    _request_data.update(crop_table_padding=crop_table_padding) if crop_table_padding is not None else None
-    _request_data.update(system_prompt=system_prompt) if system_prompt is not None else None
-    _request_data.update(max_tokens=max_tokens) if max_tokens is not None else None
-    _request_data.update(repair_latex=repair_latex) if repair_latex is not None else None
-
-    for _ in range(retry):
-        try:
-            with httpx.Client(base_url=api_url, timeout=httpx.Timeout(timeout=timeout)) as client:
-                resp = client.post(
-                    url="/api/inference_table",
-                    files={"image": Path(image_path).open("rb")},
-                    data=_request_data,
-                )
-                response = resp.json()
-            return response["origin_content"]
-        except Exception as e:
-            print(e)
-            _error = e
-            time.sleep(10)
-    raise _error
 
 
 def calc_correct_rate(
@@ -309,19 +257,9 @@ Cell correct count: {result.cell_correct_count}
 
 
 def table_correct_rate(
-    api_url: str,
     dataset_path: PathLike,
     inference_result_folder: str,
-    prompt: str = None,
-    model_name: str = None,
-    detect_table: bool = True,
-    crop_table_padding: int = -60,
-    system_prompt: str = None,
-    max_tokens: int = 4096,
-    repair_latex: bool = False,
     remove_all_space_row: bool = True,
-    retry: int = 5,
-    timeout: float = 900,
     tqdm: bool = True,
 ) -> list[EvalResult]:
     data: list[tuple[PathLike, PathLike]] = list()
@@ -330,45 +268,28 @@ def table_correct_rate(
     # Pre-check dataset are correct pairs for label txt data and image data
     for txt_filepath in Path(dataset_path).glob("*.txt"):
         _data = None
-        for image_extension in ["jpg", "png"]:
-            if Path(txt_filepath.parent, f"{txt_filepath.stem}.{image_extension.lower()}").exists():
-                _data = [txt_filepath, Path(txt_filepath.parent, f"{txt_filepath.stem}.{image_extension.lower()}")]
-            elif Path(txt_filepath.parent, f"{txt_filepath.stem}.{image_extension.upper()}").exists():
-                _data = [txt_filepath, Path(txt_filepath.parent, f"{txt_filepath.stem}.{image_extension.upper()}")]
+        for image_extension in [".jpg", ".png"]:
+            if Path(txt_filepath.parent, f"{txt_filepath.stem}{image_extension.lower()}").exists():
+                _data = [txt_filepath, Path(txt_filepath.parent, f"{txt_filepath.stem}{image_extension.lower()}")]
+            elif Path(txt_filepath.parent, f"{txt_filepath.stem}{image_extension.upper()}").exists():
+                _data = [txt_filepath, Path(txt_filepath.parent, f"{txt_filepath.stem}{image_extension.upper()}")]
 
         if _data:
-            _data.append(Path(Path(dataset_path).parent, inference_result_folder, f"{txt_filepath.stem}.txt"))
-            data.append(tuple(_data))
+            if Path(dataset_path, inference_result_folder, f"{txt_filepath.stem}.txt").exists():
+                _data.append(Path(dataset_path, inference_result_folder, f"{txt_filepath.stem}.txt"))
+                data.append(tuple(_data))
+            else:
+                raise ValueError(
+                    f"Not have inference data: {Path(dataset_path, inference_result_folder, f'{txt_filepath.stem}.txt')!s}"
+                )
         else:
             raise ValueError(f"Not have image data: {txt_filepath!s}")
     logger.debug(f"data: {data}")
 
     # Eval
     for txt_filepath, image_filepath, inference_filepath in TQDM.tqdm(data, desc="Eval") if tqdm else data:
-        if not Path(inference_filepath).exists():
-            logger.info(f"Call api date: {dt.datetime.now()!s}")
-            predict_latex_table_text = _inference_latex_table_httpx(
-                api_url=api_url,
-                prompt=prompt,
-                image_path=image_filepath,
-                model_name=model_name,
-                detect_table=detect_table,
-                crop_table_padding=crop_table_padding,
-                system_prompt=system_prompt,
-                max_tokens=max_tokens,
-                repair_latex=repair_latex,
-                retry=retry,
-                timeout=timeout,
-            )
-
-            Path(inference_filepath).parent.mkdir(exist_ok=True, parents=True)
-            with Path(inference_filepath).open("w", encoding="utf-8") as f:
-                f.write(predict_latex_table_text)
-
-            time.sleep(10)
-        else:
-            with Path(inference_filepath).open("r", encoding="utf-8") as f:
-                predict_latex_table_text = f.read()
+        with Path(inference_filepath).open("r", encoding="utf-8") as f:
+            predict_latex_table_text = f.read()
 
         with Path(txt_filepath).open(mode="r", encoding="utf-8") as f:
             gold_latex_table_text = f.read()
@@ -411,7 +332,7 @@ def table_correct_rate(
             dataset_path=str(dataset_path),
         )
 
-        if predict_df and gold_df:
+        if predict_df is not None and gold_df is not None:
             result.cell_count = len(gold_df.columns) * len(gold_df) + len(gold_df.columns)
 
         if predict_df is None:
@@ -453,29 +374,20 @@ def table_correct_rate(
 
 if __name__ == "__main__":
     args = arg_parser()
-    common_parameters = vars(args)
+    parameters = vars(args)
 
-    logger.info(f"Used parameters:\n{pprint.pformat(common_parameters)}")
+    logger.info(f"Used parameters:\n{pprint.pformat(parameters)}")
 
-    dataset_paths: dict[str, str] = common_parameters.pop("datasets")
-    output_path: str = common_parameters.pop("output")
-    target_platform: str = common_parameters.pop("target_platform")
+    dataset_paths: dict[str, str] = parameters.pop("datasets")
+    output_path: str = parameters.pop("output")
+    target_platform: str = parameters.pop("target_platform")
 
     results = []
     for dataset_path in dataset_paths:
-        dataset_path_split = dataset_path.split(":", maxsplit=1)
-        passed_parameters = common_parameters.copy()
-        if len(dataset_path_split) > 1:
-            for parameter in dataset_path_split[1].replace(" ", "").split(","):
-                parameter_split = parameter.split("=", maxsplit=1)
-                passed_parameters.update(ast.literal_eval(f"{{'{parameter_split[0]}': {parameter_split[1]}}}"))
-
-        logger.info(f"Eval {dataset_path_split[0]}\nparameter: {pprint.pformat(passed_parameters)}")
+        logger.info(f"Run {dataset_path!s}")
         results += table_correct_rate(
-            dataset_path=dataset_path_split[0],
-            timeout=300,
-            retry=30,
-            **passed_parameters,
+            dataset_path=dataset_path,
+            **parameters,
         )
 
     correct_rate = calc_correct_rate(results=results)
