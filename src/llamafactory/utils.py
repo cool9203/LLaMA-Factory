@@ -12,7 +12,7 @@ _latex_table_begin_pattern = r"\\begin{tabular}{[lrc|]*}"
 _latex_table_end_pattern = r"\\end{tabular}"
 _latex_multicolumn_pattern = r"\\multicolumn{(\d+)}{([lrc|]+)}{(.*)}"
 _latex_multirow_pattern = r"\\multirow{(\d+)}{([\*\d]*)}{(.*)}"
-_html_table_begin_pattern = r"<table>[\s\w]*(?:<thead>)?"
+_html_table_begin_pattern = r"<table(?: ?.*=.*)*>[\s\w]*(?:<thead>)?"
 _html_table_end_pattern = r"</table>"
 
 
