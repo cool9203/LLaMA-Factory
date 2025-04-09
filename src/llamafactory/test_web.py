@@ -83,20 +83,25 @@ def load_model(
     chat_template: str,
 ) -> ChatModel:
     adapter_config_path = Path(model_name, "adapter_config.json")
-    with adapter_config_path.open(mode="r", encoding="utf-8") as f:
-        adapter_config = json.load(fp=f)
+    chat_model_args = {
+        "template": chat_template,
+        "infer_dtype": "float16",
+        "do_sample": False,
+        "max_new_tokens": 4096,
+    }
 
-    return ChatModel(
-        {
-            "model_name_or_path": adapter_config.get("base_model_name_or_path"),
-            "adapter_name_or_path": model_name,
-            "finetuning_type": "lora",
-            "template": chat_template,
-            "infer_dtype": "float16",
-            "do_sample": False,
-            "max_new_tokens": 4096,
-        }
-    )
+    if adapter_config_path.exists():
+        with adapter_config_path.open(mode="r", encoding="utf-8") as f:
+            adapter_config = json.load(fp=f)
+            chat_model_args.update(
+                model_name_or_path=adapter_config.get("base_model_name_or_path"),
+                adapter_name_or_path=model_name,
+                finetuning_type="lora",
+            )
+    else:
+        chat_model_args.update(model_name_or_path=model_name)
+
+    return ChatModel(**chat_model_args)
 
 
 @torch.inference_mode()
