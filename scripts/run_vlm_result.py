@@ -45,6 +45,7 @@ def arg_parser() -> argparse.Namespace:
         default="",
         help="Model system prompt",
     )
+    parser.add_argument("--inference_result_folder", type=str, default=None, help="Save inference result folder name")
 
     args = parser.parse_args()
 
@@ -96,6 +97,7 @@ def _vlm_inference(
 def run_vlm_result(
     api_url: str,
     dataset_path: PathLike,
+    inference_result_folder: str = None,
     prompt: str = None,
     model_name: str = None,
     detect_table: bool = False,
@@ -113,12 +115,20 @@ def run_vlm_result(
     for filepath in Path(dataset_path).iterdir():
         if filepath.suffix.lower() not in [".jpg", ".jpeg", ".png"]:
             continue
-        data.append(
-            (
-                filepath,
-                Path(Path(dataset_path), f"{filepath.stem}"),
+        if inference_result_folder:
+            data.append(
+                (
+                    filepath,
+                    Path(Path(dataset_path), inference_result_folder, f"{filepath.stem}"),
+                )
             )
-        )
+        else:
+            data.append(
+                (
+                    filepath,
+                    Path(Path(dataset_path), f"{filepath.stem}"),
+                )
+            )
     logger.debug(f"data: {data}")
 
     # Eval
