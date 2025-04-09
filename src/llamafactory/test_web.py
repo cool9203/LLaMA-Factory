@@ -101,7 +101,7 @@ def load_model(
     else:
         chat_model_args.update(model_name_or_path=model_name)
 
-    return ChatModel(**chat_model_args)
+    return ChatModel(chat_model_args)
 
 
 @torch.inference_mode()
