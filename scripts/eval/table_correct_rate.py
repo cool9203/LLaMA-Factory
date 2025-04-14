@@ -189,7 +189,8 @@ def save_result(
     output_path = Path(output_path)
     output_path.mkdir(parents=True, exist_ok=True)
 
-    style: tuple[str, str] = style if isinstance(style, tuple) else tuple(style.split(":"))
+    if style:
+        style: tuple[str, str] = style if isinstance(style, tuple) else tuple(style.split(":"))
 
     correct_rate = calc_correct_rate(results=results)
 
@@ -232,7 +233,12 @@ def save_result(
             ]
             if result.predict_df is not None:
                 df = pd.DataFrame([list(result.predict_df.columns)] + result.predict_df.values.tolist())
-                styling_df = df.style.apply(highlight_multiple, axis=None, targets=error_indexes_styling, style=style)
+                if style:
+                    styling_df = df.style.apply(
+                        highlight_multiple, axis=None, targets=error_indexes_styling, style=style
+                    )
+                else:
+                    styling_df = df
                 styling_df_html = styling_df.to_html(header=False, index=False)
                 f.write(f"""{_css}
 Cell count: {result.cell_count}
