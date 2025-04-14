@@ -22,7 +22,8 @@ _replace_vocab = {
     "，": ",",
     r"\#": "#",
     "□": " ",
-    "|": " ",
+    "（": "(",
+    "）": ")",
 }
 _css = r"""<style>
     details {
@@ -46,11 +47,6 @@ _css = r"""<style>
         max-width: 45%;
     }
 
-    table,
-    img {
-        margin-right: 2%;
-    }
-
     img,
     table,
     details {
@@ -60,13 +56,6 @@ _css = r"""<style>
     img,
     details>table {
         max-width: 100%;
-    }
-
-    td {
-        padding-top: 1rem;
-        padding-bottom: 1rem;
-        padding-left: 1rem;
-        padding-right: 1rem;
     }
 </style>"""
 
@@ -358,6 +347,10 @@ def table_correct_rate(
             dataset_path=str(dataset_path),
         )
 
+        if gold_df is not None:
+            gold_df_non_ignore_header = ~gold_df.columns.isin(ignore_headers)
+            result.cell_count = sum(gold_df_non_ignore_header) * len(gold_df) + sum(gold_df_non_ignore_header)
+
         if predict_df is not None and gold_df is not None:
             # Detect header from rows
             if detect_headers:
@@ -365,8 +358,8 @@ def table_correct_rate(
                 predict_df = detect_pandas_header(df=predict_df, detect_headers=detect_headers)
                 result.gold_df = gold_df
                 result.predict_df = predict_df
-            gold_df_non_ignore_header = ~gold_df.columns.isin(ignore_headers)
-            result.cell_count = sum(gold_df_non_ignore_header) * len(gold_df) + sum(gold_df_non_ignore_header)
+                gold_df_non_ignore_header = ~gold_df.columns.isin(ignore_headers)
+                result.cell_count = sum(gold_df_non_ignore_header) * len(gold_df) + sum(gold_df_non_ignore_header)
 
         if predict_df is None:
             result.predict_latex_error = True
