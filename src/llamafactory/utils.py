@@ -12,8 +12,9 @@ _latex_table_begin_pattern = r"\\begin{tabular}{[lrc|]*}"
 _latex_table_end_pattern = r"\\end{tabular}"
 _latex_multicolumn_pattern = r"\\multicolumn{(\d+)}{([lrc|]+)}{(.*)}"
 _latex_multirow_pattern = r"\\multirow{(\d+)}{([\*\d]*)}{(.*)}"
-_html_table_begin_pattern = r"<table(?: ?.*=.*)*>[\s\w]*(?:<thead>)?"
+_html_table_begin_pattern = r"<table\b[^>]*?>"
 _html_table_end_pattern = r"</table>"
+_html_table_pattern = r"(?:^|\n) *<table\b[^>]*?>[\s\S]*?<\/table>"
 
 
 class FormatError(Exception): ...
@@ -246,6 +247,14 @@ def convert_html_table_to_pandas(
     remove_all_space_row: bool = False,
     **kwds,
 ) -> pd.DataFrame:
+    # Pre-process html_table_str
+    html_table_results = re.findall(_html_table_pattern, html_table_str)
+    html_table_str = (  # Try get largest char length table
+        html_table_results[max((len(v), i) for i, v in enumerate(html_table_results))[1]]
+        if html_table_results
+        else html_table_str
+    )
+
     try:
         with StringIO(html_table_str) as f:
             dfs = pd.read_html(
