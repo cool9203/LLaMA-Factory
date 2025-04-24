@@ -10,11 +10,13 @@ import pandas as pd
 
 _latex_table_begin_pattern = r"\\begin{tabular}{[lrc|]*}"
 _latex_table_end_pattern = r"\\end{tabular}"
+_latex_table_pattern = r"\\begin{tabular}{[lrc|]*}[\s\S]*?\\end{tabular}"
 _latex_multicolumn_pattern = r"\\multicolumn{(\d+)}{([lrc|]+)}{(.*)}"
 _latex_multirow_pattern = r"\\multirow{(\d+)}{([\*\d]*)}{(.*)}"
 _html_table_begin_pattern = r"<table\b[^>]*?>"
 _html_table_end_pattern = r"</table>"
 _html_table_pattern = r"(?:^|\n) *<table\b[^>]*?>[\s\S]*?<\/table>"
+_markdown_table_row_pattern = r"(?m)^(\|.+\|)"
 
 
 class FormatError(Exception): ...
@@ -102,12 +104,16 @@ def preprocess_latex_table_string(
     return "\\\\\n".join(new_rows)
 
 
-def is_latex_table(table_str: str):
+def is_latex_table(table_str: str) -> bool:
     return len(re.findall(_latex_table_begin_pattern, table_str)) >= 1
 
 
-def is_html_table(table_str: str):
+def is_html_table(table_str: str) -> bool:
     return len(re.findall(_html_table_begin_pattern, table_str)) >= 1
+
+
+def is_markdown_table(table_str: str) -> bool:
+    return len(re.findall(_markdown_table_row_pattern, table_str)) >= 1
 
 
 def pre_check_latex_table_string(
@@ -116,8 +122,6 @@ def pre_check_latex_table_string(
     results = re.findall(_latex_table_begin_pattern, latex_table_str)
     if not results:
         raise NotLatexError("Not latex table")
-    elif len(results) > 1:
-        raise NotSupportMultiLatexTableError("Not support convert have multi latex table")
 
     begin_str = results[0]
     end_str = r"\end{tabular}"
@@ -218,7 +222,7 @@ def convert_pandas_to_latex(
         latex_table_str = f"\\begin{{tabular}}{{{''.join(['c' for _ in range(len(df.columns))])}}}\n"
 
     # Add header
-    latex_table_str += _row_before_text + f"{'&'.join(list(df.columns))}\\\\\n"
+    latex_table_str += _row_before_text + f"{'&'.join(list(str(column) for column in df.columns))}\\\\\n"  # noqa: C400
 
     # Add row data
     for i in range(len(df)):
@@ -228,11 +232,11 @@ def convert_pandas_to_latex(
             if skip_count > 0:
                 skip_count -= 1
             else:
-                multicolumn_result = re.findall(_latex_multicolumn_pattern, df.iloc[i, column_index])
+                multicolumn_result = re.findall(_latex_multicolumn_pattern, str(df.iloc[i, column_index]))
                 skip_count = (
                     int(multicolumn_result[0][0]) - 1 if multicolumn_result and skip_count == 0 else skip_count
                 )
-                row.append(df.iloc[i, column_index])
+                row.append(str(df.iloc[i, column_index]))
         latex_table_str += _row_before_text + f"{'&'.join(row)}\\\\\n"
 
     if full_border:
@@ -246,15 +250,7 @@ def convert_html_table_to_pandas(
     html_table_str: str,
     remove_all_space_row: bool = False,
     **kwds,
-) -> pd.DataFrame:
-    # Pre-process html_table_str
-    html_table_results = re.findall(_html_table_pattern, html_table_str)
-    html_table_str = (  # Try get largest char length table
-        html_table_results[max((len(v), i) for i, v in enumerate(html_table_results))[1]]
-        if html_table_results
-        else html_table_str
-    )
-
+) -> list[pd.DataFrame]:
     try:
         with StringIO(html_table_str) as f:
             dfs = pd.read_html(
@@ -269,9 +265,9 @@ def convert_html_table_to_pandas(
                     columns=df.columns,
                 )
                 for df in dfs
-            ][0]
+            ]
         else:
-            return dfs[0]
+            return dfs
     except Exception:
         raise NotHtmlError("This table str not is html")
 
@@ -282,15 +278,18 @@ def convert_table_to_pandas(
     unsqueeze: bool = False,
     remove_all_space_row: bool = False,
     **kwds,
-) -> pd.DataFrame:
+) -> list[pd.DataFrame]:
     if is_latex_table(table_str):
-        return convert_latex_table_to_pandas(
-            latex_table_str=table_str,
-            headers=headers,
-            unsqueeze=unsqueeze,
-            remove_all_space_row=remove_all_space_row,
-            **kwds,
-        )
+        return [
+            convert_latex_table_to_pandas(
+                latex_table_str=latex_table_str,
+                headers=headers,
+                unsqueeze=unsqueeze,
+                remove_all_space_row=remove_all_space_row,
+                **kwds,
+            )
+            for latex_table_str in re.findall(_latex_table_pattern, table_str)
+        ]
     elif is_html_table(table_str):
         return convert_html_table_to_pandas(
             html_table_str=table_str,
