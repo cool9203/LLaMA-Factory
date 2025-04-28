@@ -13,7 +13,9 @@ import tqdm as TQDM
 def arg_parser() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Convert label studio format to OpenAI format")
 
-    parser.add_argument("-i", "--input_path", type=str, required=True, help="Input label studio annotation path")
+    parser.add_argument(
+        "-i", "--input_paths", nargs="+", type=str, required=True, help="Input label studio annotation path"
+    )
     parser.add_argument("--image_path", type=str, default=None, help="Image path")
     parser.add_argument("-o", "--output_path", type=str, default=None, help="Output path")
     parser.add_argument("-p", "--prompt", type=str, required=True, help="Prompt")
@@ -42,7 +44,7 @@ def text_replace(
 
 
 def from_img_and_txt(
-    input_path: os.PathLike,
+    input_paths: os.PathLike,
     prompt: str,
     output_path: os.PathLike = None,
     system_prompt: str = "",
@@ -52,7 +54,9 @@ def from_img_and_txt(
 ) -> list[dict[str, list[str | dict[str, str]]]]:
     from llamafactory import utils
 
-    labels = list(Path(input_path).glob("*.txt"))
+    labels: list[Path] = list()
+    for input_path in input_paths:
+        labels += list(Path(input_path).glob("*.txt"))
 
     converted_data = list()
     for label_file in TQDM.tqdm(labels) if tqdm else labels:
@@ -84,6 +88,13 @@ def from_img_and_txt(
 
         with label_file.open(mode="r", encoding="utf-8") as f:
             label_content = f.read()
+
+        label_content = text_replace(
+            text=label_content,
+            patterns=[
+                (r"\\#", "#"),
+            ],
+        )
 
         try:
             if output_format:
