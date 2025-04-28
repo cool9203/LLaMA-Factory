@@ -45,7 +45,7 @@ def from_label_studio(
     output_path: os.PathLike = None,
     system_prompt: str = "",
     image_path: os.PathLike = None,
-    check_format: bool = None,
+    check_format: str = None,
     tqdm: bool = True,
 ) -> list[dict[str, list[str | dict[str, str]]]]:
     with Path(input_path).open(mode="r", encoding="utf-8") as f:
@@ -53,6 +53,8 @@ def from_label_studio(
 
     converted_data = list()
     for label in TQDM.tqdm(labels) if tqdm else labels:
+        if label["cancelled_annotations"] > 0:
+            continue
         messages = list()
         if system_prompt:
             messages.append(
@@ -68,13 +70,13 @@ def from_label_studio(
             }
         )
 
-        for annotation in label["annotations"][0]["result"]:
+        for annotation in label["annotations"][-1]["result"]:
             if annotation["type"] in ["textarea"]:
                 try:
                     text = _check_format(text=annotation["value"]["text"][0], format=check_format)
                 except Exception as e:
                     print(f"id: {label['id']}")
-                    print(text)
+                    print(annotation["value"]["text"][0])
                     raise e
 
                 messages.append({"role": "assistant", "content": text})
