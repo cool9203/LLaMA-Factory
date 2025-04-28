@@ -267,7 +267,7 @@ def inference_table(
         output.origin_content,
         output.html_content,
         [Image.open(io.BytesIO(base64.b64decode(image.encode("utf-8")))) for image in output.images],
-        output.tokens.completion_tokens / output.used_time,
+        output.tokens.completion_tokens / output.used_time if output.used_time > 0 else 0,
         output.tokens.completion_tokens,
         output.used_time,
     )
@@ -353,7 +353,7 @@ def _inference_table(
                             latex_table_str=generate_response["content"],
                             headers=True,
                             unsqueeze=unsqueeze,
-                        ),
+                        )[0],
                         full_border=full_border,
                     )
                 )

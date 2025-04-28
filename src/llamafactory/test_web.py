@@ -217,6 +217,8 @@ def inference_table(
         output.html_content,
         [Image.open(io.BytesIO(base64.b64decode(image.encode("utf-8")))) for image in output.images],
         output.tokens.completion_tokens / output.used_time if output.used_time > 0 else 0,
+        output.tokens.completion_tokens,
+        output.used_time,
     )
 
 
@@ -297,7 +299,7 @@ def _inference_table(
                             latex_table_str=generate_response["content"],
                             headers=True,
                             unsqueeze=unsqueeze,
-                        ),
+                        )[0],
                         full_border=full_border,
                     )
                 )
@@ -386,6 +388,8 @@ def test_website(
                 full_border = gr.Checkbox(label="修復 latex 表格全框線", visible=dev_mode)
                 unsqueeze = gr.Checkbox(label="修復 latex 並解開多行/列合併", visible=dev_mode)
                 time_usage = gr.Textbox(label="每秒幾個 token")
+                all_complate_token = gr.Textbox(label="生成多少 token")
+                usage_time = gr.Textbox(label="總花費時間")
 
         text_output = gr.Textbox(label="生成的文字輸出", visible=dev_mode)
 
@@ -455,6 +459,8 @@ def test_website(
                 html_output,
                 crop_table_results,
                 time_usage,
+                all_complate_token,
+                usage_time,
             ],
         )
         return blocks

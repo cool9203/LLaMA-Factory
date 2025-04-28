@@ -329,13 +329,13 @@ def table_correct_rate(
                 headers=True,
                 unsqueeze=True,
                 remove_all_space_row=remove_all_space_row,
-            )
+            )[0]
             predict_df = utils.convert_table_to_pandas(
                 table_str=predict_latex_table_text,
                 headers=True,
                 unsqueeze=True,
                 remove_all_space_row=remove_all_space_row,
-            )
+            )[0]
         except Exception as e:
             logger.error(txt_filepath)
             logger.exception(e)
