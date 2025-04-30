@@ -23,6 +23,7 @@ def arg_parser() -> argparse.Namespace:
     parser.add_argument(
         "--output_format", type=str, choices=["latex", "html", "markdown"], default=None, help="Check format"
     )
+    parser.add_argument("--reasoning", action="store_true", help="Add table reasoning content")
     parser.add_argument("--tqdm", action="store_true", help="Show progress bar")
 
     args = parser.parse_args()
@@ -50,6 +51,7 @@ def from_img_and_txt(
     system_prompt: str = "",
     image_path: os.PathLike = None,
     output_format: str = None,
+    reasoning: bool = False,
     tqdm: bool = True,
 ) -> list[dict[str, list[str | dict[str, str]]]]:
     from llamafactory import utils
@@ -60,7 +62,6 @@ def from_img_and_txt(
 
     converted_data = list()
     for label_file in TQDM.tqdm(labels) if tqdm else labels:
-        messages = list()
         _image_path = None
 
         # Get image path
@@ -71,20 +72,6 @@ def from_img_and_txt(
                 _image_path = Path(label_file.parent, label_file.stem + image_extension.upper())
 
         assert _image_path is not None, f"未找到標記檔案對應之圖像: '{label_file!s}'"
-
-        if system_prompt:
-            messages.append(
-                {
-                    "role": "system",
-                    "content": system_prompt,
-                }
-            )
-        messages.append(
-            {
-                "role": "user",
-                "content": f"<image> {prompt}",
-            }
-        )
 
         with label_file.open(mode="r", encoding="utf-8") as f:
             label_content = f.read()
@@ -98,7 +85,9 @@ def from_img_and_txt(
 
         try:
             if output_format:
-                texts = []
+                texts = list()
+                reasoning_contents = list()
+
                 # Convert to same format
                 if utils.is_html_table(table_str=label_content) or utils.is_latex_table(table_str=label_content):
                     text = label_content
@@ -106,8 +95,20 @@ def from_img_and_txt(
                     text = pypandoc.convert_text(source=label_content, format="markdown", to="html")
 
                 dfs = utils.convert_table_to_pandas(table_str=text, headers=True, unsqueeze=False)
-                for df in dfs:
+                for df_index, df in enumerate(dfs):
                     df.columns = [re.sub(r"\.\d+$", "", str(col)) for col in df.columns]
+                    replaced_columns = text_replace(
+                        text=str(list(df.columns)),
+                        patterns=[
+                            (r"Unnamed: ?\d+", ""),
+                        ],
+                    )
+
+                    reasoning_contents.append(
+                        f"表格{df_index + 1}結構:\n"
+                        + f"    - 共有{len(df.columns)}欄與{len(df)}列\n"
+                        + f"    - 欄位名稱分別為{replaced_columns}"
+                    )
 
                     if output_format == "latex":
                         text = utils.convert_pandas_to_latex(df=df)
@@ -149,16 +150,41 @@ def from_img_and_txt(
                         ],
                     )
                     texts.append(text)
+                reasoning_content = (
+                    "<think>\n"
+                    + f"以下是基於圖片中表格內容的 {output_format.lower()} 程式碼，用於解析該表格:\n\n"
+                    + "圖片內容表格解析:\n\n"
+                    + "表格數量:\n"
+                    + f"    該圖片總共包含{len(dfs)}個表格\n\n"
+                    + "\n\n".join(reasoning_contents)
+                    + "\n</think>"
+                )
+                if reasoning:
+                    texts = [reasoning_content] + texts  # Insert reasoning_content into texts index-0
 
         except Exception as e:
             print(f"file: {label_file!s}")
             print(label_content)
             raise e
 
+        messages = list()
+        if system_prompt:
+            messages.append(
+                {
+                    "role": "system",
+                    "content": system_prompt,
+                }
+            )
+        messages.append(
+            {
+                "role": "user",
+                "content": f"<image> {prompt}",
+            }
+        )
         messages.append(
             {
                 "role": "assistant",
-                "content": "\n".join(texts) if output_format else label_content,
+                "content": "\n\n".join(texts) if output_format else label_content,
             }
         )
 
