@@ -8,7 +8,7 @@ from typing import Any, Callable, Dict, Sequence, Tuple, Union
 import pandas as pd
 
 
-_latex_table_begin_pattern = r"\\begin{tabular}{[lrc|]*}"
+_latex_table_begin_pattern = r"\\begin{tabular}{[lrc|]*}\n?"
 _latex_table_end_pattern = r"\\end{tabular}"
 _latex_table_pattern = r"\\begin{tabular}{[lrc|]*}[\s\S]*?\\end{tabular}"
 _latex_multicolumn_pattern = r"\\multicolumn{(\d+)}{([lrc|]+)}{(.*)}"
