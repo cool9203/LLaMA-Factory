@@ -3,7 +3,9 @@
 import argparse
 import json
 import os
+import pprint
 import re
+import sys
 from pathlib import Path
 
 import pypandoc
@@ -25,6 +27,9 @@ def arg_parser() -> argparse.Namespace:
     )
     parser.add_argument("--reasoning", action="store_true", help="Add table reasoning content")
     parser.add_argument("--code_block", action="store_true", help="Add code block tag to contain table content")
+    parser.add_argument(
+        "--row_comment", type=int, default=0, help="Add row comment to contain table content, for hint row index"
+    )
     parser.add_argument("--tqdm", action="store_true", help="Show progress bar")
 
     args = parser.parse_args()
@@ -45,6 +50,23 @@ def text_replace(
     return result
 
 
+def replace_nth_occurrence(
+    text: str,
+    sub: str | re.Pattern[str],
+    repl: str,
+    n: int,
+    pos: int = 0,
+    endpos: int = sys.maxsize,
+) -> str:
+    pattern = re.compile(re.escape(sub) if isinstance(sub, str) else sub)
+    matches = list(pattern.finditer(string=text, pos=pos, endpos=endpos))
+    if len(matches) < n:
+        return text  # 沒有第 n 個出現
+    start = matches[n - 1].start()
+    end = start + len(pattern.pattern)
+    return text[:start] + repl + text[end:]
+
+
 def from_img_and_txt(
     input_paths: os.PathLike,
     prompt: str,
@@ -54,6 +76,7 @@ def from_img_and_txt(
     output_format: str = None,
     reasoning: bool = False,
     code_block: bool = False,
+    row_comment: int = 0,
     tqdm: bool = True,
 ) -> list[dict[str, list[str | dict[str, str]]]]:
     from llamafactory import utils
@@ -108,12 +131,29 @@ def from_img_and_txt(
 
                     reasoning_contents.append(
                         f"表格{df_index + 1}結構:\n"
-                        + f"    - 共有{len(df.columns)}欄與{len(df)}列\n"
+                        + f"    - 共有{len(df.columns)}欄與{len(df) + 1 if output_format == 'latex' else len(df)}列\n"
                         + f"    - 欄位名稱分別為{replaced_columns}"
                     )
 
                     if output_format == "latex":
                         text = utils.convert_pandas_to_latex(df=df)
+                        if row_comment > 0:
+                            latex_table_row_pattern = re.compile(r"[\s\S]*? ?\\\\")
+                            latex_table_header_result = list(re.finditer(utils._latex_table_begin_pattern, text))
+                            for row_index, sub in enumerate(
+                                latex_table_row_pattern.finditer(
+                                    string=text,
+                                    pos=latex_table_header_result[0].end() if latex_table_header_result else 0,
+                                )
+                            ):
+                                if (row_index + 1) % row_comment == 0:
+                                    text = replace_nth_occurrence(
+                                        text=text,
+                                        sub=latex_table_row_pattern,
+                                        repl=f"%第{row_index + 1}列開始\n{sub.group()}",
+                                        n=row_index + 1,
+                                        pos=latex_table_header_result[0].end() if latex_table_header_result else 0,
+                                    )
                     elif output_format == "markdown":
                         text = df.to_markdown(index=False, numalign=None, stralign=None)
                         text = text_replace(
@@ -123,6 +163,27 @@ def from_img_and_txt(
                                 (r"\|-{2,}", r"|-"),
                             ],
                         )
+                        if row_comment > 0:
+                            markdown_table_row_pattern = re.compile(r"\|[\s\S]*?\|(?:\n|$)")
+                            markdown_table_header_result = list(re.finditer(r"\|(?:-\|)+", text))
+                            for row_index, sub in enumerate(
+                                markdown_table_row_pattern.finditer(
+                                    string=text,
+                                    pos=markdown_table_header_result[0].end() if markdown_table_header_result else 0,
+                                )
+                            ):
+                                if (row_index + 1) % row_comment == 0:
+                                    text = replace_nth_occurrence(
+                                        text=text,
+                                        sub=markdown_table_row_pattern,
+                                        repl=f"<!-- 第{row_index + 1}列開始 -->{sub.group()}",
+                                        n=row_index + 1,
+                                        pos=(
+                                            markdown_table_header_result[0].end()
+                                            if markdown_table_header_result
+                                            else 0
+                                        ),
+                                    )
                     elif output_format == "html":
                         text = re.sub(
                             r"<tr.*>",
@@ -145,6 +206,23 @@ def from_img_and_txt(
                                 (r"\n *</table>", "</table>"),
                             ],
                         )
+                        if row_comment > 0:
+                            html_table_row_pattern = re.compile(r"<tr>")
+                            html_table_header_result = list(re.finditer(r"<\/thead>", text))
+                            for row_index, sub in enumerate(
+                                html_table_row_pattern.finditer(
+                                    string=text,
+                                    pos=html_table_header_result[0].end() if html_table_header_result else 0,
+                                )
+                            ):
+                                if (row_index + 1) % row_comment == 0:
+                                    text = replace_nth_occurrence(
+                                        text=text,
+                                        sub=html_table_row_pattern,
+                                        repl=f"<!-- 第{row_index + 1}列開始 -->{sub.group()}",
+                                        n=row_index + 1,
+                                        pos=html_table_header_result[0].end() if html_table_header_result else 0,
+                                    )
                     text = text_replace(
                         text=text,
                         patterns=[
@@ -157,7 +235,8 @@ def from_img_and_txt(
                     texts.append(text)
                 reasoning_content = (
                     "<think>\n"
-                    + f"以下是基於圖片中表格內容的 {output_format.lower()} 程式碼，用於解析該表格:\n\n"
+                    + "首先要仔細檢查圖片裡的表格結構，如表格數量、欄數、列數，好準確判斷各個表格內容。\n"
+                    + f"接著根據圖片中的表格內容，使用 {output_format.lower()} 程式碼解析表格:\n\n"
                     + "圖片內容表格解析:\n\n"
                     + "表格數量:\n"
                     + f"    該圖片總共包含{len(dfs)}個表格\n\n"
@@ -226,4 +305,5 @@ def from_img_and_txt(
 
 if __name__ == "__main__":
     args = arg_parser()
+    print(pprint.pformat(vars(args)))
     from_img_and_txt(**vars(args))
