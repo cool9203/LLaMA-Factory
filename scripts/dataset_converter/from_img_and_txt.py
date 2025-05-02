@@ -24,6 +24,7 @@ def arg_parser() -> argparse.Namespace:
         "--output_format", type=str, choices=["latex", "html", "markdown"], default=None, help="Check format"
     )
     parser.add_argument("--reasoning", action="store_true", help="Add table reasoning content")
+    parser.add_argument("--code_block", action="store_true", help="Add code block tag to contain table content")
     parser.add_argument("--tqdm", action="store_true", help="Show progress bar")
 
     args = parser.parse_args()
@@ -52,6 +53,7 @@ def from_img_and_txt(
     image_path: os.PathLike = None,
     output_format: str = None,
     reasoning: bool = False,
+    code_block: bool = False,
     tqdm: bool = True,
 ) -> list[dict[str, list[str | dict[str, str]]]]:
     from llamafactory import utils
@@ -149,6 +151,9 @@ def from_img_and_txt(
                             (r"Unnamed: ?\d+", ""),
                         ],
                     )
+
+                    if code_block:
+                        text = f"```{output_format}\n{text}```"
                     texts.append(text)
                 reasoning_content = (
                     "<think>\n"
